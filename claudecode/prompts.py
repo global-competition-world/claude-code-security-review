@@ -1,5 +1,166 @@
 """Security audit prompt templates."""
 
+
+def get_full_codebase_audit_prompt(pr_data=None, custom_scan_instructions=None):
+    """Generate full-codebase security audit prompt for Claude Code.
+
+    Audits the entire repository at the current commit instead of only PR diff.
+
+    Args:
+        pr_data: Optional PR data dictionary for context (PR number, repo, author).
+            When omitted (e.g. push/workflow_dispatch), only repo metadata is used.
+        custom_scan_instructions: Optional custom security categories to append.
+
+    Returns:
+        Formatted prompt string.
+    """
+    if pr_data:
+        context_lines = [
+            f"- Pull Request: #{pr_data['number']} \"{pr_data.get('title', '')}\"",
+            f"- Repository: {pr_data.get('head', {}).get('repo', {}).get('full_name', 'unknown')}",
+            f"- Author: {pr_data.get('user', 'unknown')}",
+            "",
+            "Note: Although this run is associated with a PR, you must audit the ENTIRE repository at the current checkout, not just the PR diff.",
+        ]
+    else:
+        context_lines = [
+            "- Trigger: non-PR event (push, schedule, or manual run)",
+            "- Audit scope: ENTIRE repository at the current checkout.",
+        ]
+    context_section = "\n".join(context_lines)
+
+    custom_categories_section = ""
+    if custom_scan_instructions:
+        custom_categories_section = f"\n{custom_scan_instructions}\n"
+
+    return f"""
+You are a senior security engineer conducting a full-codebase security audit.
+
+CONTEXT:
+{context_section}
+
+OBJECTIVE:
+Perform a security-focused review of the ENTIRE codebase at the current checkout to identify HIGH-CONFIDENCE security vulnerabilities with real exploitation potential. This is not limited to recent changes — examine all source files in the repository.
+
+CRITICAL INSTRUCTIONS:
+1. MINIMIZE FALSE POSITIVES: Only flag issues where you're >80% confident of actual exploitability
+2. AVOID NOISE: Skip theoretical issues, style concerns, or low-impact findings
+3. FOCUS ON IMPACT: Prioritize vulnerabilities that could lead to unauthorized access, data breaches, or system compromise
+4. EXCLUSIONS: Do NOT report the following issue types:
+   - Denial of Service (DOS) vulnerabilities, even if they allow service disruption
+   - Secrets or sensitive data stored on disk (these are handled by other processes)
+   - Rate limiting or resource exhaustion issues
+
+SECURITY CATEGORIES TO EXAMINE:
+
+**Input Validation Vulnerabilities:**
+- SQL injection via unsanitized user input
+- Command injection in system calls or subprocesses
+- XXE injection in XML parsing
+- Template injection in templating engines
+- NoSQL injection in database queries
+- Path traversal in file operations
+
+**Authentication & Authorization Issues:**
+- Authentication bypass logic
+- Privilege escalation paths
+- Session management flaws
+- JWT token vulnerabilities
+- Authorization logic bypasses
+
+**Crypto & Secrets Management:**
+- Hardcoded API keys, passwords, or tokens
+- Weak cryptographic algorithms or implementations
+- Improper key storage or management
+- Cryptographic randomness issues
+- Certificate validation bypasses
+
+**Injection & Code Execution:**
+- Remote code execution via deserialization
+- Pickle injection in Python
+- YAML deserialization vulnerabilities
+- Eval injection in dynamic code execution
+- XSS vulnerabilities in web applications (reflected, stored, DOM-based)
+
+**Data Exposure:**
+- Sensitive data logging or storage
+- PII handling violations
+- API endpoint data leakage
+- Debug information exposure
+{custom_categories_section}
+Additional notes:
+- Even if something is only exploitable from the local network, it can still be a HIGH severity issue
+
+ANALYSIS METHODOLOGY:
+
+Phase 1 - Repository Mapping (Use file search tools):
+- Enumerate the major source directories and entry points (servers, handlers, CLIs, jobs, IaC)
+- Identify languages, frameworks, and security libraries in use
+- Locate authentication, authorization, and input-handling layers
+
+Phase 2 - Threat Surface Identification:
+- Map all externally reachable endpoints and trust boundaries
+- Identify privileged operations (file I/O, network, subprocess, eval, deserialization)
+- Find all locations consuming user-controlled or third-party input
+
+Phase 3 - Vulnerability Assessment:
+- Trace data flow from untrusted sources to sensitive sinks across the whole repo
+- Examine each privileged operation for the security categories above
+- Verify each suspected issue against existing sanitization/validation patterns before reporting
+
+REQUIRED OUTPUT FORMAT:
+
+You MUST output your findings as structured JSON with this exact schema:
+
+{{
+  "findings": [
+    {{
+      "file": "path/to/file.py",
+      "line": 42,
+      "severity": "HIGH",
+      "category": "sql_injection",
+      "description": "User input passed to SQL query without parameterization",
+      "exploit_scenario": "Attacker could extract database contents by manipulating the 'search' parameter with SQL injection payloads like '1; DROP TABLE users--'",
+      "recommendation": "Replace string formatting with parameterized queries using SQLAlchemy or equivalent",
+      "confidence": 0.95
+    }}
+  ],
+  "analysis_summary": {{
+    "files_reviewed": 8,
+    "high_severity": 1,
+    "medium_severity": 0,
+    "low_severity": 0,
+    "review_completed": true,
+  }}
+}}
+
+SEVERITY GUIDELINES:
+- **HIGH**: Directly exploitable vulnerabilities leading to RCE, data breach, or authentication bypass
+- **MEDIUM**: Vulnerabilities requiring specific conditions but with significant impact
+- **LOW**: Defense-in-depth issues or lower-impact vulnerabilities
+
+CONFIDENCE SCORING:
+- 0.9-1.0: Certain exploit path identified, tested if possible
+- 0.8-0.9: Clear vulnerability pattern with known exploitation methods
+- 0.7-0.8: Suspicious pattern requiring specific conditions to exploit
+- Below 0.7: Don't report (too speculative)
+
+FINAL REMINDER:
+Focus on HIGH and MEDIUM findings only. Better to miss some theoretical issues than flood the report with false positives. Each finding should be something a security engineer would confidently raise in a code review.
+
+IMPORTANT EXCLUSIONS - DO NOT REPORT:
+- Denial of Service (DOS) vulnerabilities or resource exhaustion attacks
+- Secrets/credentials stored on disk (these are managed separately)
+- Rate limiting concerns or service overload scenarios. Services do not need to implement rate limiting.
+- Memory consumption or CPU exhaustion issues.
+- Lack of input validation on non-security-critical fields. If there isn't a proven problem from a lack of input validation, don't report it.
+
+Begin your analysis now. Use the repository exploration tools to walk the entire codebase, then report findings.
+
+Your final reply must contain the JSON and nothing else. You should not reply again after outputting the JSON.
+"""
+
+
 def get_security_audit_prompt(pr_data, pr_diff=None, include_diff=True, custom_scan_instructions=None):
     """Generate security audit prompt for Claude Code.
 
