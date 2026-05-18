@@ -177,19 +177,16 @@ class ClaudeAPIClient:
         try:
             # Split the prompt into a static prefix (identical for every
             # finding within a run — cacheable) and a dynamic suffix that
-            # carries the PR/finding-specific content. The system prompt is
-            # also fully static, so we cache it too. Two ephemeral cache
-            # breakpoints stays well under the 4-marker request limit.
+            # carries the PR/finding-specific content. A single ephemeral
+            # cache breakpoint on the user static prefix is sufficient: the
+            # cumulative prefix it captures (system + intro + filtering rules
+            # + scoring + format spec) is ~1.6k tokens, comfortably above the
+            # 1,024-token Sonnet/Opus minimum cacheable size. The system
+            # prompt alone is too small (~75 tokens) to be worth its own
+            # breakpoint — anything under the minimum is silently not cached.
             static_prefix = self._generate_static_prefix(custom_filtering_instructions)
             dynamic_suffix = self._generate_dynamic_suffix(finding, pr_context)
 
-            system_blocks = [
-                {
-                    "type": "text",
-                    "text": self._generate_system_prompt(),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
             user_blocks = [
                 {
                     "type": "text",
@@ -204,7 +201,7 @@ class ClaudeAPIClient:
 
             success, response_text, error_msg = self.call_with_retry(
                 prompt=user_blocks,
-                system_prompt=system_blocks,
+                system_prompt=self._generate_system_prompt(),
                 max_tokens=PROMPT_TOKEN_LIMIT
             )
             
